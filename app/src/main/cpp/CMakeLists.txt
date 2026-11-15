@@ -25,6 +25,26 @@ target_link_options(aml_fel PRIVATE "-Wl,-z,max-page-size=16384")
 target_link_libraries(aml_fel ${log-lib} android)
 endif()
 
+# Native Dolby Vision Profile 7 FEL/MEL on the Fire TV Cube 3 (Gazelle) through MediaCodec plus the module's
+# /dev/dvfel interface (core/player/firetvfel). The Cube's userspace is 32-bit, so this is armeabi-v7a only.
+# dvfelplay is built unchanged from firetvfel/dvfelplay and links the prebuilt libdovi archive under DV7/libdovi.
+option(FIRETV_FEL_NATIVE_ENABLED "Build the Fire TV Cube 3 FEL bridge (armeabi-v7a only)" OFF)
+if(FIRETV_FEL_NATIVE_ENABLED AND ANDROID_ABI STREQUAL "armeabi-v7a")
+    get_filename_component(_fel_repo_root "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
+    set(_fel_libdovi "${_fel_repo_root}/DV7/libdovi/android-armeabi-v7a")
+    if(EXISTS "${_fel_libdovi}/lib/libdovi.a" AND EXISTS "${_fel_libdovi}/include/libdovi/rpu_parser.h")
+        set(LIBDOVI_DIR "${_fel_libdovi}" CACHE PATH "libdovi install prefix for dvfelplay" FORCE)
+        set(DVFP_BUILD_TEST OFF CACHE BOOL "" FORCE)
+        add_subdirectory(firetvfel/dvfelplay)
+        add_library(firetvfel SHARED firetvfel/firetvfel_jni.cpp)
+        target_compile_features(firetvfel PRIVATE cxx_std_17)
+        target_link_libraries(firetvfel PRIVATE dvfelplay ${log-lib})
+        target_link_options(firetvfel PRIVATE "-Wl,-z,max-page-size=16384")
+    else()
+        message(WARNING "firetvfel: no armeabi-v7a libdovi under ${_fel_libdovi}; the Fire TV FEL bridge is skipped")
+    endif()
+endif()
+
 if (NUVIO_BUILD_DOVI)
 add_library(
     dovi_bridge

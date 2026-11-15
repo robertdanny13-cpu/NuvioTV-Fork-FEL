@@ -171,3 +171,6 @@
 
 -dontwarn java.beans.ConstructorProperties
 -dontwarn java.beans.Transient
+# Fire TV Cube 3 native FEL (core/player/firetvfel) wraps the video MediaCodecAdapter in a java.lang.reflect.Proxy
+# and picks queueInputBuffer / flush / release by name, so the interface must keep its method names.
+-keep class androidx.media3.exoplayer.mediacodec.MediaCodecAdapter { *; }

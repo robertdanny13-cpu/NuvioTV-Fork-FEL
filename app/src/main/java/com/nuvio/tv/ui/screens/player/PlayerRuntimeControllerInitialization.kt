@@ -519,7 +519,12 @@ internal fun PlayerRuntimeController.initializePlayer(
                     "Tunneled playback skipped: media audio goes to USB (route=${currentAudioOutputRoute?.key})"
                 )
             }
-            val tunnelingActive = playerSettings.effectiveTunnelingEnabled && !tunnelingBlockedByUsbAudio
+            // Fire TV Cube 3 native FEL feeds the Dolby Vision decoder sample by sample from the app, which a
+            // tunnelled codec cannot take: no tunnelling while Native FEL is chosen and the module is ready.
+            val tunnelingBlockedByFireTvFel = playerSettings.dv7HandlingMode == Dv7HandlingMode.NATIVE_FEL &&
+                com.nuvio.tv.core.player.firetvfel.FireTvFel.available()
+            val tunnelingActive = playerSettings.effectiveTunnelingEnabled && !tunnelingBlockedByUsbAudio &&
+                !tunnelingBlockedByFireTvFel
             if (rememberAudioDelayPerDeviceEnabled) {
                 applyStoredAudioDelayForCurrentRouteIfEnabled()
             }
@@ -694,12 +699,15 @@ internal fun PlayerRuntimeController.initializePlayer(
             val nativeFelActive = playerSettings.dv7HandlingMode == Dv7HandlingMode.NATIVE_FEL &&
                 !nativeFelDisabledStreamUrls.contains(url) &&
                 nativeFelDisplayPolicy?.displayDv == true &&
-                com.nuvio.tv.core.player.amlfel.AmlFelSupport.isNativeFelUsable(nativeFelDeviceBits)
+                com.nuvio.tv.core.player.firetvfel.NativeFelRoute.isUsable(nativeFelDeviceBits)
+            // One setting, two backends: the AM9 uses its own renderer, the Fire TV Cube 3 a MediaCodec adapter.
+            val nativeFelOnFireTv = nativeFelActive &&
+                com.nuvio.tv.core.player.firetvfel.NativeFelRoute.usesFireTvRoute(nativeFelDeviceBits)
             isNativeFelActiveForCurrentPlayback = nativeFelActive
             if (playerSettings.dv7HandlingMode == Dv7HandlingMode.NATIVE_FEL) {
                 Log.i(
                     PlayerRuntimeController.TAG,
-                    "DV7_NATIVE_FEL: active=$nativeFelActive " +
+                    "DV7_NATIVE_FEL: active=$nativeFelActive fireTv=$nativeFelOnFireTv " +
                         "felKernel=${com.nuvio.tv.core.player.amlfel.AmlFelSupport.isFelKernel()} " +
                         "displayDv=${nativeFelDisplayPolicy?.displayDv} " +
                         "disabledForStream=${nativeFelDisabledStreamUrls.contains(url)}"
@@ -1508,6 +1516,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                 preferFfmpegAudio = preferFfmpegAudioActive,
                 bluetoothForcePcm = isBluetoothAudioOutput,
                 nativeFelActive = nativeFelActive,
+                nativeFelOnFireTv = nativeFelOnFireTv,
                 onNativeSelectionChanged = { selected -> nativeVideoSelection.update(nativeSelectionOwner, selected) },
                 nativeMelEnabled = am9SystemProperty("debug.nuvio.native_dv7_mel") != "0",
                 playbackSpeedProvider = { _uiState.value.playbackSpeed },
@@ -2396,10 +2405,12 @@ internal fun PlayerRuntimeController.initializePlayer(
                         val audioRetryScheduled = tryBitstreamAudioTrackSameConfigRetry(error)
                         noteAudioTrackRejection(error, audioRetryScheduled)
                         if (audioRetryScheduled) return
-                        // AM9 native FEL: MEL / non-P7 RPU / device error / stalled decoder -> re-prepare
-                        // this stream on the AUTO path at the current position (one-shot per stream).
+                        // Native FEL (AM9 renderer or Fire TV Cube adapter): MEL / non-P7 RPU / device error /
+                        // stalled decoder -> re-prepare this stream on the AUTO path at the current position
+                        // (one-shot per stream).
                         if (isNativeFelActiveForCurrentPlayback &&
-                            com.nuvio.tv.core.player.amlfel.AmlDvFelVideoRenderer.isFallbackError(error) &&
+                            (com.nuvio.tv.core.player.amlfel.AmlDvFelVideoRenderer.isFallbackError(error) ||
+                                com.nuvio.tv.core.player.firetvfel.FireTvFelFallback.isFallbackError(error)) &&
                             nativeFelDisabledStreamUrls.add(currentStreamUrl)
                         ) {
                             Log.i(
@@ -3462,6 +3473,11 @@ private class SubtitleOffsetRenderersFactory(
     private val bluetoothForcePcm: Boolean = false,
     /** Native FEL: put [com.nuvio.tv.core.player.amlfel.AmlDvFelVideoRenderer] first (claims DV P7 only). */
     private val nativeFelActive: Boolean = false,
+    /**
+     * With [nativeFelActive]: the native route is the Fire TV Cube 3's, through a MediaCodec adapter
+     * ([com.nuvio.tv.core.player.firetvfel.FireTvFelCodecAdapterFactory]). The AM9 renderer is not added then.
+     */
+    private val nativeFelOnFireTv: Boolean = false,
     private val onNativeSelectionChanged: (Boolean) -> Unit = {},
     private val nativeMelEnabled: Boolean = true,
     private val vendorUnstablePts: Boolean = false,
@@ -3486,7 +3502,7 @@ private class SubtitleOffsetRenderersFactory(
         out: ArrayList<Renderer>
     ) {
         val videoExtensionMode = videoExtensionRendererMode(extensionRendererMode)
-        if (nativeFelActive) {
+        if (nativeFelActive && !nativeFelOnFireTv) {
             // Ahead of MediaCodec so it wins the DV profile 7 track (equal support -> first renderer).
             out.add(com.nuvio.tv.core.player.amlfel.AmlDvFelVideoRenderer(eventHandler, eventListener, playbackSpeedProvider, nativeMelEnabled, onNativeSelectionChanged))
         }
@@ -3520,8 +3536,17 @@ private class SubtitleOffsetRenderersFactory(
         // ordering pass through untouched.
         for (vc1RestampRenderer in vc1RestampTmp) {
             if (vc1RestampRenderer::class.java == MediaCodecVideoRenderer::class.java) {
+                // Fire TV Cube 3 native FEL: Profile 7 samples go through dvfelplay before the Dolby Vision decoder.
+                // Every other stream is handed to the stock adapter untouched.
+                val videoCodecAdapterFactory = getCodecAdapterFactory().let { stock ->
+                    if (nativeFelActive && nativeFelOnFireTv) {
+                        com.nuvio.tv.core.player.firetvfel.FireTvFelCodecAdapterFactory(stock)
+                    } else {
+                        stock
+                    }
+                }
                 val vc1RestampBuilder = MediaCodecVideoRenderer.Builder(context)
-                    .setCodecAdapterFactory(getCodecAdapterFactory())
+                    .setCodecAdapterFactory(videoCodecAdapterFactory)
                     .setMediaCodecSelector(mediaCodecSelector)
                     .setAllowedJoiningTimeMs(allowedVideoJoiningTimeMs)
                     .setEnableDecoderFallback(enableDecoderFallback)

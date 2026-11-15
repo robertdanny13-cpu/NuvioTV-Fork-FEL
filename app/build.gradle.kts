@@ -92,6 +92,8 @@ if (gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = tr
     }
 }
 val enableAmlFelNative = resolveProperty(devProperties, localProperties, "AML_FEL_NATIVE_ENABLED", "true").let(::parseBooleanProperty)
+// Fire TV Cube 3 native FEL (armeabi-v7a only; the CMake target skips other ABIs). Needs NDK platform 26 for dvfelplay.
+val enableFireTvFelNative = resolveProperty(devProperties, localProperties, "FIRETV_FEL_NATIVE_ENABLED", "true").let(::parseBooleanProperty)
 val doviStaticLibPath = resolveProperty(devProperties, localProperties, "DOVI_LIBDOVI_STATIC_LIB")
 val doviIncludeDirPath = resolveProperty(devProperties, localProperties, "DOVI_LIBDOVI_INCLUDE_DIR")
 val doviPrebuiltRootPath = resolveProperty(devProperties, localProperties, "DOVI_LIBDOVI_PREBUILT_ROOT")
@@ -163,12 +165,20 @@ android {
         buildConfigField("boolean", "DOVI_NATIVE_ENABLED", enableDoviNative.toString())
         buildConfigField("boolean", "DOVI_EXTRACTOR_HOOK_READY", doviExtractorHookReady.toString())
         buildConfigField("boolean", "AML_FEL_NATIVE_ENABLED", enableAmlFelNative.toString())
-        // libnuviothumb is always built; dovi_bridge and aml_fel only when enabled.
+        buildConfigField("boolean", "FIRETV_FEL_NATIVE_ENABLED", enableFireTvFelNative.toString())
+        // Optional -PnuvioAppLabel="Nuvio Arc FEL" names a side-by-side build; without it the translated app_name is kept.
+        manifestPlaceholders["appLabel"] =
+            providers.gradleProperty("nuvioAppLabel").orNull?.takeIf { it.isNotBlank() } ?: "@string/app_name"
+        // libnuviothumb is always built; dovi_bridge, aml_fel and firetvfel only when enabled.
         externalNativeBuild {
             cmake {
                 arguments(
-                    "-DNUVIO_BUILD_DOVI=${if (enableDoviNative) "ON" else "OFF"}"
+                    "-DNUVIO_BUILD_DOVI=${if (enableDoviNative) "ON" else "OFF"}",
+                    "-DFIRETV_FEL_NATIVE_ENABLED=${if (enableFireTvFelNative) "ON" else "OFF"}"
                 )
+                // dvfelplay (Fire TV FEL) uses pthread_setname_np and AImage_deleteAsync, which need NDK platform 26.
+                // minSdk stays 24; the bridge only loads on the Fire TV Cube 3 (Android 9).
+                if (enableFireTvFelNative) arguments("-DANDROID_PLATFORM=android-26")
             }
         }
         if (enableDoviNative || enableAmlFelNative) {

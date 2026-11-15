@@ -46,7 +46,7 @@ class AssessmentDeviceFacts internal constructor(
                 DolbyVisionBaseLayerPolicy.resolve(context, DoviBridge.isLibraryLoaded),
                 AudioOutputRouteDetector.detect(context),
                 settings.dv7HandlingMode == com.nuvio.tv.data.local.Dv7HandlingMode.NATIVE_FEL &&
-                    com.nuvio.tv.core.player.amlfel.AmlFelSupport.isDeviceUsable(),
+                    com.nuvio.tv.core.player.firetvfel.NativeFelRoute.isDeviceUsable(),
                 VodCacheSizing.resolveMaxBytes(
                     PlayerMediaSourceFactory.reclaimableVodCacheSpaceBytes(context),
                     VodCacheSizeMode.AUTO,

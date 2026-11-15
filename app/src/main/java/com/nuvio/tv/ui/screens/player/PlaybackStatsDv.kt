@@ -14,9 +14,13 @@ internal object PlaybackStatsDv {
 
     enum class Dv7Layers { RPU_BL_EL, BL_RPU, BL_ONLY }
 
-    /** True when the last video decoder was the Amlogic dual-layer port (native FEL route), not a fallback. */
+    /**
+     * True when the last video decoder was the Amlogic dual-layer port (native FEL route), not a fallback, or when
+     * the Fire TV Cube 3 adapter has a FEL session open that is composing the enhancement layer.
+     */
     fun isNativeFelDecoder(decoderName: String?): Boolean =
-        decoderName?.startsWith(com.nuvio.tv.core.player.amlfel.AmlDvFelVideoRenderer.DECODER_NAME) == true
+        decoderName?.startsWith(com.nuvio.tv.core.player.amlfel.AmlDvFelVideoRenderer.DECODER_NAME) == true ||
+            com.nuvio.tv.core.player.firetvfel.FireTvFel.felSessionActive
 
     /** Which layers of a Profile 7 stream reached the picture, or null when the playback does not say. */
     fun dv7LayersUsed(modeEffective: String?, decoderName: String?, converted: Boolean): Dv7Layers? = when {
