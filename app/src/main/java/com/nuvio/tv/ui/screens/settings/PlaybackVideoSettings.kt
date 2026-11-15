@@ -236,7 +236,12 @@ internal fun dv7ModeChoices(nativeFelUsable: Boolean?): List<Dv7HandlingMode> =
 @Composable
 private fun rememberNativeFelUsable(): Boolean? {
     val usable by produceState(initialValue = AmlFelSupport.nativeFelUsableCached()) {
-        if (value == null) value = withContext(Dispatchers.IO) { AmlFelSupport.nativeFelUsableOnce() }
+        // Fire TV Cube 3 with the Magisk module: native FEL runs through the MediaCodec adapter, not the AM9 port.
+        if (value != true && withContext(Dispatchers.IO) { com.nuvio.tv.core.player.firetvfel.FireTvFel.available() }) {
+            value = true
+        } else if (value == null) {
+            value = withContext(Dispatchers.IO) { AmlFelSupport.nativeFelUsableOnce() }
+        }
     }
     return usable
 }
