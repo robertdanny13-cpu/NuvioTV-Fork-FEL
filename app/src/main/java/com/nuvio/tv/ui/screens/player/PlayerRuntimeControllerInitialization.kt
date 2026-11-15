@@ -3557,6 +3557,12 @@ private class SubtitleOffsetRenderersFactory(
                     )
                     // The factory's own setting only reaches the stock renderer replaced here.
                     .setMapDV7ToHevc(mapDv7ToHevc)
+                if (nativeFelActive && nativeFelOnFireTv) {
+                    // Same as Wholphin FEL: never drop access units before the decoder. A dropped input would skip
+                    // base and enhancement layer together and shows up as stutter; late frames are dropped at the
+                    // output by the regular renderer logic instead.
+                    vc1RestampBuilder.experimentalSetLateThresholdToDropDecoderInputUs(C.TIME_UNSET)
+                }
                 out.add(
                     DecodeOrderPtsVideoRenderer(
                         vc1RestampBuilder,
