@@ -34,6 +34,9 @@ jobs:
     timeout-minutes: 120
     env:
       VARIANT: ${{ inputs.variant }}
+      # Release of the upstream Nuvio Arc this build is based on (shown in the app as <this>-fel.<run>). Bump it
+      # whenever the fork is synced with a new upstream release.
+      UPSTREAM_VERSION: 1.2.0-arc.1
       # Signs the release variant with the debug key as well (see app/build.gradle.kts).
       CI_USE_DEBUG_SIGNING: "true"
 
@@ -75,7 +78,7 @@ jobs:
           ./gradlew ":app:$TASK" \
             -PnuvioAppIdSuffix=.fel \
             -PnuvioAppLabel="Nuvio Arc FEL" \
-            -ParcVersionName="1.1.0-nt.10.fel.${GITHUB_RUN_NUMBER}" \
+            -ParcVersionName="${UPSTREAM_VERSION}-fel.${GITHUB_RUN_NUMBER}" \
             -ParcVersionCode="$((1568 + GITHUB_RUN_NUMBER))" \
             --stacktrace
 
