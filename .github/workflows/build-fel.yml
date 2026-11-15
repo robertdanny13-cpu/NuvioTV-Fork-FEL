@@ -1,0 +1,91 @@
+name: Build Nuvio Arc FEL (Fire TV Cube 3)
+
+# Manual build of the side-by-side "Nuvio Arc FEL" app: application id com.nuvio.tv.test.fel, launcher name
+# "Nuvio Arc FEL", so it installs next to the regular Nuvio Arc (com.nuvio.tv.test) and keeps its own data.
+# The native FEL bridge (armeabi-v7a) is built in; install the armeabi-v7a APK on the Fire TV Cube 3.
+#
+# Both variants are signed with the debug key, which is cached between runs so a newer build installs over the
+# previous one. GitHub drops a cache that is not used for 7 days; after that the first install needs the old
+# FEL app uninstalled once (the regular Nuvio Arc is not affected).
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: debug is the safe first build; release is minified (smaller, faster) but takes longer and is less tried
+        required: true
+        type: choice
+        options:
+          - debug
+          - release
+        default: debug
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-fel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Nuvio Arc FEL (${{ inputs.variant }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      VARIANT: ${{ inputs.variant }}
+      # Signs the release variant with the debug key as well (see app/build.gradle.kts).
+      CI_USE_DEBUG_SIGNING: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Prepare local properties
+        run: |
+          touch local.properties local.dev.properties
+
+      - name: Restore the signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: nuvio-arc-fel-debug-keystore-v1
+
+      - name: Build the APK
+        run: |
+          if [ "$VARIANT" = "release" ]; then TASK=assembleFullRelease; else TASK=assembleFullDebug; fi
+          ./gradlew ":app:$TASK" \
+            -PnuvioAppIdSuffix=.fel \
+            -PnuvioAppLabel="Nuvio Arc FEL" \
+            -ParcVersionName="1.1.0-nt.10.fel.${GITHUB_RUN_NUMBER}" \
+            -ParcVersionCode="$((1568 + GITHUB_RUN_NUMBER))" \
+            --stacktrace
+
+      - name: List the APKs
+        run: ls -la "app/build/outputs/apk/full/$VARIANT/"
+
+      - name: Check that the FEL libraries are in the armeabi-v7a APK
+        run: |
+          apk=$(ls app/build/outputs/apk/full/"$VARIANT"/*armeabi-v7a*.apk | head -n 1)
+          echo "APK: $apk"
+          unzip -l "$apk" | grep -E 'lib/armeabi-v7a/(libfiretvfel|libdvfelplay)\.so' || true
+          count=$(unzip -l "$apk" | grep -cE 'lib/armeabi-v7a/(libfiretvfel|libdvfelplay)\.so' || true)
+          if [ "$count" -ne 2 ]; then
+            echo "::error::libfiretvfel.so and/or libdvfelplay.so are missing from the APK; the native FEL bridge was not built."
+            exit 1
+          fi
+
+      - name: Upload the APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuvio-arc-fel-${{ inputs.variant }}-${{ github.run_number }}
+          path: app/build/outputs/apk/full/${{ inputs.variant }}/*.apk
+          if-no-files-found: error
+          retention-days: 14
