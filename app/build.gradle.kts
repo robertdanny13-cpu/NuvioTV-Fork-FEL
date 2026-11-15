@@ -207,7 +207,10 @@ android {
         buildConfigField("String", "GITHUB_OWNER", "\"ysosrs123\"")
         buildConfigField("String", "GITHUB_REPO", "\"NuvioTV-Fork\"")
         buildConfigField("String", "GITHUB_REPO_NEW_NAME", "\"Nuvio-Arc\"")
-        buildConfigField("boolean", "UPDATE_CHECK_ENABLED", "true")
+        // The side-by-side FEL build (-PnuvioAppIdSuffix=...) must not offer the upstream APK, which carries the
+        // original application id and would update the regular app instead.
+        val updateCheckEnabled = providers.gradleProperty("nuvioAppIdSuffix").orNull.isNullOrBlank()
+        buildConfigField("boolean", "UPDATE_CHECK_ENABLED", updateCheckEnabled.toString())
     }
 
     flavorDimensions += "distribution"
