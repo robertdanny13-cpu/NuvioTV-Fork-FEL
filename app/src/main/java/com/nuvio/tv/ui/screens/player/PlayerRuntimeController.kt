@@ -67,6 +67,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.nuvio.tv.core.util.withAppLocale
 import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicBoolean
@@ -114,7 +115,7 @@ class PlayerRuntimeController(
     internal val serverPlayback: ServerPlayback,
     internal val serverStreams: ServerStreams,
     internal val profileId: Int,
-    savedStateHandle: SavedStateHandle,
+    internal val savedStateHandle: SavedStateHandle,
     internal val scope: CoroutineScope
 ) {
 
@@ -321,6 +322,23 @@ class PlayerRuntimeController(
             .ifEmpty { StreamSidecarSubtitles.forUrl(currentStreamUrl) }
     }
 
+    /** URL opened from the reuse-last-link cache; it is refetched after a playback error even without a token. */
+    internal var linkCacheSourceUrl: String? = currentStreamUrl.takeIf {
+        navigationArgs.fromLinkCache && it.isNotBlank() && !it.startsWith("torrent://")
+    }
+
+    /** Last URL refetched after a playback error, so a link is refreshed at most once. */
+    internal var linkRefreshAttemptedUrl: String? = null
+
+    /** URL picked by auto source selection; only this source falls back to the next match on failure. */
+    internal var autoSelectedSourceUrl: String? = currentStreamUrl.takeIf {
+        navigationArgs.autoPlayNav && it.isNotBlank() && !it.startsWith("torrent://")
+    }
+    internal var sourceFallbackAttempts = 0
+    internal val sourceFallbackTriedKeys = mutableSetOf<String>()
+    internal var sourceFallbackJob: Job? = null
+    internal var sourceStartupTimeoutJob: Job? = null
+
     fun getCurrentStreamUrl(): String = currentStreamUrl
     fun getCurrentHeaders(): Map<String, String> = currentHeaders
 
@@ -417,6 +435,7 @@ class PlayerRuntimeController(
 
     init {
         observeDisplayRefresh()
+        notePlayerPanels()
         scope.launch {
             _uiState
                 .map { it.isPlaying }
@@ -540,6 +559,8 @@ class PlayerRuntimeController(
     internal var seekProgressSyncJob: Job? = null
     internal var frameRateProbeJob: Job? = null
     internal var frameRateProbeToken: Long = 0L
+    internal val mkvTimedFrameRate = kotlinx.coroutines.flow.MutableStateFlow<Float?>(null)
+    @Volatile internal var mkvFrameTimingToken: Long = 0L
     internal var hideAspectRatioIndicatorJob: Job? = null
     internal var hideStreamSourceIndicatorJob: Job? = null
     internal var hidePlayerEngineSwitchInfoJob: Job? = null
@@ -626,6 +647,8 @@ class PlayerRuntimeController(
     internal var mpvEofSeenClear = false
     // Set once the Exo progress loop forced a natural end for a position past duration.
     internal var exoEndOverrunHandled = false
+    // Set when a load error right at the end of the file was taken as the natural end.
+    internal var exoSourceEndReached = false
     internal var shouldEnforceAutoplayOnFirstReady = true
 
     internal var rebufferCount: Int = 0
@@ -766,6 +789,10 @@ class PlayerRuntimeController(
     internal var resolvedAutoPlayerEngine: InternalPlayerEngine? = null
     internal var currentInternalPlayerEngine: InternalPlayerEngine = InternalPlayerEngine.EXOPLAYER
     internal var streamAutoPlayModeSetting: StreamAutoPlayMode = StreamAutoPlayMode.MANUAL
+    internal var streamAutoPlayFallbackActive: Boolean = false
+    internal var streamAutoPlayFallbackMaxSources: Int = PlayerSettings.DEFAULT_SOURCE_FALLBACK_MAX_SOURCES
+    internal var streamAutoPlayFallbackStartupTimeoutSeconds: Int =
+        PlayerSettings.DEFAULT_SOURCE_STARTUP_TIMEOUT_SECONDS
     internal var streamAutoPlayNextEpisodeEnabledSetting: Boolean = false
     internal var streamAutoPlayPreferBingeGroupForNextEpisodeSetting: Boolean = false
     internal var streamAutoPlayTimeoutSecondsSetting: Int = 10
@@ -1127,17 +1154,20 @@ class PlayerRuntimeController(
     private fun observeStreamBadgeSettings() {
         scope.launch {
             streamBadgeSettingsDataStore.settings.collect { settings ->
+                val filters = if (settings.showInPlayer) {
+                    withContext(Dispatchers.Default) {
+                        StreamBadgeMatcher.compileCached(settings.rules.forPlayer(settings.playerBadgeSource))
+                    }
+                } else {
+                    emptyList()
+                }
                 _uiState.update {
                     it.copy(
                         showFileSizeBadges = settings.showFileSizeBadges,
                         showAddonLogo = settings.showAddonLogo,
                         streamBadgePlacement = settings.badgePlacement,
                         showPlayerBadges = settings.showInPlayer,
-                        playerBadgeFilters = if (settings.showInPlayer) {
-                            StreamBadgeMatcher.compile(settings.rules.forPlayer(settings.playerBadgeSource))
-                        } else {
-                            emptyList()
-                        }
+                        playerBadgeFilters = filters
                     )
                 }
             }

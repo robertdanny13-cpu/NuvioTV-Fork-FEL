@@ -271,7 +271,7 @@ internal class PlayerMediaSourceFactory(
         if (!shape.useChunkSessionSource || shape.mp4SessionMode) return
         val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return
         val sanitizedHeaders = sanitizeHeaders(headers)
-        val okHttpFactory = OkHttpDataSource.Factory(chunkSessionClient(url)).apply {
+        val okHttpFactory = OkHttpDataSource.Factory(PieceCallFactory(chunkSessionClient(url))).apply {
             setDefaultRequestProperties(sanitizedHeaders)
             if (sanitizedHeaders.none { it.key.equals("User-Agent", ignoreCase = true) }) {
                 setUserAgent(DEFAULT_USER_AGENT)
@@ -319,7 +319,7 @@ internal class PlayerMediaSourceFactory(
         // DefaultDataSource stays in front so data: manifests resolve; loopback engines serve
         // adaptive manifests slowly, so they get the long read timeout as well.
         val httpDataSourceFactory = if (isHls || isDash) {
-            DefaultDataSource.Factory(
+            val adaptiveFactory = DefaultDataSource.Factory(
                 context,
                 PlayerPlaybackNetworking.createHttpDataSourceFactory(
                     sanitizedHeaders,
@@ -327,6 +327,7 @@ internal class PlayerMediaSourceFactory(
                     slowStart = slowStart
                 )
             )
+            if (isHls) HlsParameterSetInitDataSource.Factory(adaptiveFactory) else adaptiveFactory
         } else {
             PlayerPlaybackNetworking.createDataSourceFactory(context, sanitizedHeaders, slowStart = slowStart)
         }
@@ -382,7 +383,7 @@ internal class PlayerMediaSourceFactory(
                         "for progressive MP4 with parallel connections off"
                 )
             }
-            val okHttpFactory = OkHttpDataSource.Factory(chunkSessionClient(url)).apply {
+            val okHttpFactory = OkHttpDataSource.Factory(PieceCallFactory(chunkSessionClient(url))).apply {
                 setDefaultRequestProperties(sanitizedHeaders)
                 if (sanitizedHeaders.none { it.key.equals("User-Agent", ignoreCase = true) }) {
                     setUserAgent(DEFAULT_USER_AGENT)
@@ -552,7 +553,7 @@ internal class PlayerMediaSourceFactory(
             .cookieJar(NuvioApplication.extensionCookieJar)
             .let(::withChunkSessionTimeouts)
             .build()
-        val okHttpFactory = OkHttpDataSource.Factory(client).apply {
+        val okHttpFactory = OkHttpDataSource.Factory(PieceCallFactory(client)).apply {
             setDefaultRequestProperties(headers)
             if (headers.none { it.key.equals("User-Agent", ignoreCase = true) }) setUserAgent(DEFAULT_USER_AGENT)
         }
@@ -1304,7 +1305,10 @@ internal class PlayerMediaSourceFactory(
 
             query.split('&').forEach { parameter ->
                 val key = parameter.substringBefore('=', missingDelimiterValue = "").trim()
-                val value = parameter.substringAfter('=', missingDelimiterValue = "").trim()
+                val rawValue = parameter.substringAfter('=', missingDelimiterValue = "").trim()
+                val value = runCatching {
+                    URLDecoder.decode(rawValue.replace("+", "%2B"), Charsets.UTF_8.name())
+                }.getOrDefault(rawValue).lowercase(Locale.US)
                 if (key.isBlank() || value.isBlank()) return@forEach
 
                 when (key) {
