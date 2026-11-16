@@ -4,9 +4,8 @@ name: Build Nuvio Arc FEL (Fire TV Cube 3)
 # "Nuvio Arc FEL", so it installs next to the regular Nuvio Arc (com.nuvio.tv.test) and keeps its own data.
 # The native FEL bridge (armeabi-v7a) is built in; install the armeabi-v7a APK on the Fire TV Cube 3.
 #
-# Both variants are signed with the debug key, which is cached between runs so a newer build installs over the
-# previous one. GitHub drops a cache that is not used for 7 days; after that the first install needs the old
-# FEL app uninstalled once (the regular Nuvio Arc is not affected).
+# Release builds are signed with the key in the repository secret FEL_KEYSTORE_BASE64, so every build installs over
+# the previous one. The debug variant always uses the debug key and is only meant for a first test.
 
 on:
   workflow_dispatch:
@@ -37,8 +36,6 @@ jobs:
       # Release of the upstream Nuvio Arc this build is based on (shown in the app as <this>-fel.<run>). Bump it
       # whenever the fork is synced with a new upstream release.
       UPSTREAM_VERSION: 1.2.0-arc.1
-      # Signs the release variant with the debug key as well (see app/build.gradle.kts).
-      CI_USE_DEBUG_SIGNING: "true"
 
     steps:
       - name: Checkout
@@ -66,7 +63,29 @@ jobs:
           fi
           touch local.dev.properties
 
-      - name: Restore the signing key
+      # A fixed signing key from the repository secret FEL_KEYSTORE_BASE64 keeps every build installable over the
+      # previous one. Without the secret the release variant falls back to the cached debug key (which can be
+      # evicted by GitHub, and then the update is refused as "app not installed").
+      - name: Prepare the signing key
+        env:
+          FEL_KEYSTORE_BASE64: ${{ secrets.FEL_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$FEL_KEYSTORE_BASE64" ]; then
+            printf '%s' "$FEL_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/fel.jks"
+            {
+              echo "NUVIO_RELEASE_STORE_FILE=$RUNNER_TEMP/fel.jks"
+              echo "NUVIO_RELEASE_KEY_ALIAS=fel"
+              echo "NUVIO_RELEASE_STORE_PASSWORD=felfelfel"
+              echo "NUVIO_RELEASE_KEY_PASSWORD=felfelfel"
+              echo "CI_USE_DEBUG_SIGNING=false"
+            } >> "$GITHUB_ENV"
+            echo "::notice::Signing with the FEL key from the secret FEL_KEYSTORE_BASE64"
+          else
+            echo "CI_USE_DEBUG_SIGNING=true" >> "$GITHUB_ENV"
+            echo "::warning::FEL_KEYSTORE_BASE64 is not set; signing with the cached debug key."
+          fi
+
+      - name: Restore the debug key (fallback)
         uses: actions/cache@v4
         with:
           path: ~/.android/debug.keystore
