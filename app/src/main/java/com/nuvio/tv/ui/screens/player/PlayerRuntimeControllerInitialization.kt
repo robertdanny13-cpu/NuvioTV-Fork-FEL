@@ -27,6 +27,7 @@ import androidx.media3.common.text.Cue
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer
+import androidx.media3.decoder.ffmpeg.FfmpegLibrary
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.DecoderCounters
@@ -242,6 +243,7 @@ internal fun PlayerRuntimeController.applyMediaSourceFactorySettings(playerSetti
         mediaSourceFactory.vodCacheEnabled = playerSettings.vodCacheEnabled
         mediaSourceFactory.vodCacheSizeMode = playerSettings.vodCacheSizeMode
         mediaSourceFactory.vodCacheSizeMb = playerSettings.vodCacheSizeMb
+        mediaSourceFactory.warmVodCache()
     } else {
         mediaSourceFactory.vodCacheEnabled = false
     }
@@ -547,6 +549,7 @@ internal fun PlayerRuntimeController.initializePlayer(
             mpvHi10pGnextSoftwareFallbackEnabledSetting =
                 playerSettings.mpvHi10pGnextSoftwareFallbackEnabled
             mpvHardwareDecodeModeSetting = playerSettings.mpvHardwareDecodeMode
+            mpvDirectDecodeModeSetting = playerSettings.mpvDirectDecodeMode
             var effectiveInternalPlayerEngine = overrideInternalPlayerEngine ?: playerSettings.internalPlayerEngine
             if (effectiveInternalPlayerEngine == InternalPlayerEngine.AUTO) {
                 effectiveInternalPlayerEngine = resolveAutoInternalPlayerEngine()
@@ -680,6 +683,8 @@ internal fun PlayerRuntimeController.initializePlayer(
             cancelPausedOutputCheck()
             seekReadyLogPending = false
             currentRebufferSeekInduced = false
+
+            com.nuvio.tv.core.player.amlfel.AmlDvOutput.apply(playerSettings.dvOutputBoxHdr10)
 
             // Resolve effective DV7 mode — AUTO consults the display-capability policy.
             // The persisted enum stays as-is; only the runtime behavior is derived per playback.
@@ -1413,7 +1418,9 @@ internal fun PlayerRuntimeController.initializePlayer(
                 softwareDecodersAvailable = softwareDecodersAvailable,
                 forceOpticalActive = isForcePassthroughActive,
                 effectiveDownmixEnabled = effectiveDownmixEnabled,
-                effectiveAudioOutputChannels = effectiveAudioOutputChannels
+                effectiveAudioOutputChannels = effectiveAudioOutputChannels,
+                surroundAacToAc3Allowed = softwareDecodersAvailable && !preferFfmpegAudioActive &&
+                    FfmpegLibrary.isAvailable()
             )
             surroundResolveInputs = surroundInputs
             val surround = resolveSurroundForRoute(context, surroundSettings, surroundInputs)
@@ -1591,6 +1598,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                         injectHdr10Sei = playerSettings.injectHdr10MetadataOnStrip,
                         autoSyncObservesText = autoSyncObservesText
                     ).let { MkvFrameTimingExtractorsFactory(it, startMkvFrameTiming()) }
+                        .let { TsFieldPairsExtractorsFactory(it) }
             // The thumbnail tap wraps the outermost factory. The libass path takes the unwrapped one and wraps
             // after its own Matroska swap.
             val effectiveExtractorsFactory: ExtractorsFactory =
@@ -1866,6 +1874,15 @@ internal fun PlayerRuntimeController.initializePlayer(
                 TtffTrace.mirror(playerInitLine)
                 noteSpeedupHint(url)
                 armStartCushion(url)
+                ParallelRangeDataSource.noteResumeStart(initialResumePosition > 0L)
+                mediaSourceFactory.prepareVodCache(
+                    url = url,
+                    cacheKey = currentStreamCacheKey,
+                    knownContentLength = currentVideoSize,
+                    filename = currentFilename,
+                    responseHeaders = currentStreamResponseHeaders,
+                    mimeTypeOverride = currentStreamMimeType
+                )
                 val initialMediaSource = mediaSourceFactory.createMediaSource(
                     context = context,
                     url = url,
@@ -1882,9 +1899,11 @@ internal fun PlayerRuntimeController.initializePlayer(
 
                 if (initialResumePosition > 0L) {
                     setMediaSource(initialMediaSource, initialResumePosition)
+                    resumeStartToCheck = initialResumePosition
                     clearPendingInitialResumePosition()
                     updatePlaybackTimeline(currentPosition = initialResumePosition)
                 } else {
+                    resumeStartToCheck = 0L
                     setMediaSource(initialMediaSource)
                 }
 
@@ -1894,7 +1913,8 @@ internal fun PlayerRuntimeController.initializePlayer(
                 )
                 // The thumbnails screen comes up from an index read early: the film opens when it ends.
                 val deferOpen = partyBridge?.inParty != true &&
-                    com.nuvio.tv.core.player.thumbnail.SeekThumbnails.takeDeferredOpen()
+                    com.nuvio.tv.core.player.thumbnail.SeekThumbnails.takeDeferredOpen() &&
+                    keepsDeferredOpenFor(currentFilename ?: currentStreamUrl)
                 if (!deferOpen) scheduleStartupWatchdog()
                 val isTunneledPlayback = isTunnelingActiveForCurrentPlayback
                 // Hold playWhenReady=false through prepare() so audio does not race ahead
@@ -1962,6 +1982,15 @@ internal fun PlayerRuntimeController.initializePlayer(
                         }
                         val playerDuration = duration
                         if (playerDuration > lastKnownDuration) { lastKnownDuration = playerDuration }
+                        if (playbackState == Player.STATE_READY || playbackState == Player.STATE_ENDED) {
+                            val start = resumeStartToCheck
+                            resumeStartToCheck = 0L
+                            if (PlayerStartPosition.pastTheEnd(start, playerDuration)) {
+                                Log.w(PlayerRuntimeController.TAG, "Saved position ${start}ms is past the end (${playerDuration}ms), starting from the beginning")
+                                seekTo(0L)
+                                return
+                            }
+                        }
                         val isBuffering = playbackState == Player.STATE_BUFFERING
                         updatePlaybackTimeline(duration = playerDuration.coerceAtLeast(0L))
                         // Only mark playbackEnded for real finishes so PlayerScreen does not
@@ -2215,6 +2244,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                         // Gate the audio-clock jitter sensor on actual playback -
                         // paused/rebuffering time must not count as clock jitter.
                         playbackSpeedAwareAudioSink?.setPlaybackActive(isPlaying)
+                        bufferMemoryKeeper?.onPlayingChanged(isPlaying)
                         if (!isPlaying) lateVideoLastNotPlayingMs = SystemClock.elapsedRealtime()
                         logScrobbleDiagnostic(
                             "exo_is_playing_changed",
@@ -2297,6 +2327,9 @@ internal fun PlayerRuntimeController.initializePlayer(
                             DrawingMemory.releaseForFilm(
                                 context, NuvioExoPlayerPerformanceHelper.getDevicePhysicalRamBytes(context), "first_frame"
                             )
+                            com.nuvio.tv.core.image.PictureMemoryRelease.releaseDuringFilm(
+                                context, NuvioExoPlayerPerformanceHelper.getDevicePhysicalRamBytes(context)
+                            )
                         }
                         cancelStartupWatchdog()
                         retractStartupTimeoutErrorAfterFirstFrame()
@@ -2345,9 +2378,17 @@ internal fun PlayerRuntimeController.initializePlayer(
                         if (isReleasingPlayer && error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT) return
                         cancelFirstFrameWatchdog()
                         cancelTunnelAvSyncWatchdog()
+                        if (_uiState.value.showsStartupWatchdogCard(startupWatchdogCardUrl, currentStreamUrl)) {
+                            Log.w(
+                                PlayerRuntimeController.TAG,
+                                "STARTUP_WATCHDOG: late player error ${error.errorCodeName} after the watchdog card; card kept"
+                            )
+                            return
+                        }
                         val detailedError = error.toDisplayMessage(context)
                         cancelStableProgressReset()
                         if (finishOnSourceErrorAtEnd(this@apply, error)) return
+                        holdFailoverCard(error, detailedError)
 
                         if (Vc1VideoFormatHeuristics.isVc1PlaybackFailure(
                                 error = error,
@@ -2394,7 +2435,9 @@ internal fun PlayerRuntimeController.initializePlayer(
                                     videoMimeType = currentVideoTrackMimeType,
                                     fileName = currentFilename ?: currentStreamUrl,
                                     streamMimeType = currentStreamMimeType,
-                                    videoCodecs = currentVideoTrackCodecs
+                                    videoCodecs = currentVideoTrackCodecs,
+                                    isLocalFile = !currentStreamUrl.startsWith("http://", ignoreCase = true) &&
+                                        !currentStreamUrl.startsWith("https://", ignoreCase = true)
                                 ) && switchToMpvForUnsupportedFormat(error.errorCodeName)
 
                         // Every branch below re-initialises playback and
@@ -2427,6 +2470,17 @@ internal fun PlayerRuntimeController.initializePlayer(
                         if (handleNetworkDropError(error, currentPosition)) return
                         val autoRecoveryBudgetAvailable = consumeAutoRecoveryBudget(detailedError)
                         if (autoRecoveryBudgetAvailable) {
+
+                        if (VodCacheShortLength.retryWithoutCache(error.errorCode, mediaSourceFactory.isVodCacheActive)) {
+                            Log.w(
+                                PlayerRuntimeController.TAG,
+                                "VOD_CACHE_BYPASS: read past the cached length, retrying without the disk cache " +
+                                    "host=${currentStreamUrl.safeHost()}"
+                            )
+                            mediaSourceFactory.bypassVodCacheForCurrentStream(currentStreamCacheKey)
+                            scheduleDeferredPlayerReinitialize(fromPositionMs = currentPosition)
+                            return
+                        }
 
                         // Error handlers: DV codec failures, audio decoder issues, codec state errors.
                         if (error.isDolbyVisionDecoderFailure() && !isMapDv7ToHevcActiveForCurrentPlayback) {
@@ -2716,6 +2770,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                              error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
                              error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED)
                         val card = errorCardFor(error)
+                        cancelStartupWatchdog()
                         _uiState.update {
                             it.copy(
                                 // Wiring-gap fix: surface the mapped, human-readable
@@ -3367,6 +3422,8 @@ internal fun PlayerRuntimeController.resetLoadingOverlayForNewStream() {
     cancelTunnelAvSyncWatchdog()
     cancelStallWatchdog()
     cancelStartupWatchdog()
+    startupWatchdogCardUrl = null
+    _uiState.update { it.withHeldErrorCardDropped() }
     val preparingMessage = context.getString(R.string.player_loading_preparing)
     resetLoadingDiagnostics(
         phase = "preparing",
@@ -3427,6 +3484,7 @@ internal fun PlayerRuntimeController.resetLoadingOverlayForNewStream() {
     _uiState.update { state ->
         state.copy(
             showLoadingOverlay = state.loadingOverlayEnabled,
+            isEpisodeAutoPlaySearching = false,
             showControls = false,
             loadingMessage = preparingMessage,
             loadingIssueReportVisible = false,
@@ -3677,7 +3735,9 @@ private class SubtitleOffsetRenderersFactory(
             onDiagnosticEvent = onAudioDiagnosticEvent,
             audioOutputReady = { PassthroughOutputReturn.outputReadyNow(context) },
             dtsHdIecEnabled = !dtsHdTvPassthrough,
-            outputRouteKey = { AudioOutputRouteDetector.detect(context)?.key }
+            outputRouteKey = { AudioOutputRouteDetector.detect(context)?.key },
+            // Small boxes keep the full DTS queue: the keep-alive's short queue cannot ride out their long GC pauses.
+            dtsKeepAliveEnabled = !smallBox
         )
         val playbackSpeedAwareAudioSink = PlaybackSpeedAwareAudioSink(
             sink = iecAudioSink,
@@ -3692,6 +3752,7 @@ private class SubtitleOffsetRenderersFactory(
             pinnedOutputEncodings = pinnedOutputEncodings
         )
         speedAwareSink = playbackSpeedAwareAudioSink
+        playbackSpeedAwareAudioSink.setAc3TranscodeMimes(deniedTranscodeMimes)
         playbackSpeedAwareAudioSink.setInitialPlaybackSpeed(playbackSpeedProvider())
         onPlaybackSpeedAwareAudioSinkCreated(playbackSpeedAwareAudioSink)
         return playbackSpeedAwareAudioSink

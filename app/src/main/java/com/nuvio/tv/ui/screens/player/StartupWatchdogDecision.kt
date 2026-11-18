@@ -45,7 +45,7 @@ internal object StartupWatchdogDecision {
         loadErrorSeen: Boolean = false,
         readWaitGiven: Boolean = false,
     ): Step {
-        val anotherIntervalFits = elapsedMs + intervalMs <= ceilingMs
+        val anotherIntervalFits = anotherIntervalFits(elapsedMs, intervalMs, ceilingMs)
         if (slowStart && bufferedAheadMs == 0L && !ready && anotherIntervalFits) return Step.WaitForData
         if (ready && playing && hasVideoTrack && videoSelected && !videoRestarted &&
             positionMs - lastPositionMs >= PLAYING_WITHOUT_PICTURE_MS
@@ -63,9 +63,19 @@ internal object StartupWatchdogDecision {
                 bufferedAheadMs == 0L && !ready && playbackThreadAnswers -> "no_data_buffered"
                 videoDecoderOpened && playbackThreadAnswers && !ready && bufferedAheadMs >= WELL_AHEAD_MS ->
                     "video_never_decoded"
+                videoDecoderOpened && playbackThreadAnswers && ready && playing && videoRestarted &&
+                    bufferedAheadMs >= WELL_AHEAD_MS && positionMs - lastPositionMs >= PLAYING_WITHOUT_PICTURE_MS ->
+                    "video_never_decoded"
                 else -> "decoder_unresponsive"
             }
         )
+    }
+
+    /** Counted in whole checks: a check that lands a few milliseconds late still gets the wait that fits. */
+    internal fun anotherIntervalFits(elapsedMs: Long, intervalMs: Long, ceilingMs: Long): Boolean {
+        if (intervalMs <= 0L) return false
+        val checksDone = (elapsedMs + intervalMs / 2) / intervalMs
+        return (checksDone + 1) * intervalMs <= ceilingMs
     }
 
     /**
