@@ -11,13 +11,13 @@ on:
   workflow_dispatch:
     inputs:
       variant:
-        description: debug is the safe first build; release is minified (smaller, faster) but takes longer and is less tried
+        description: release (default) is the build to install; debug is only for testing
         required: true
         type: choice
         options:
-          - debug
           - release
-        default: debug
+          - debug
+        default: release
 
 permissions:
   contents: read
@@ -97,6 +97,7 @@ jobs:
           ./gradlew ":app:$TASK" \
             -PnuvioAppIdSuffix=.fel \
             -PnuvioAppLabel="Nuvio Arc FEL" \
+            -PnuvioAbis=armeabi-v7a \
             -ParcVersionName="${UPSTREAM_VERSION}-fel.${GITHUB_RUN_NUMBER}" \
             -ParcVersionCode="$((1568 + GITHUB_RUN_NUMBER))" \
             --stacktrace
@@ -119,6 +120,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nuvio-arc-fel-${{ inputs.variant }}-${{ github.run_number }}
-          path: app/build/outputs/apk/full/${{ inputs.variant }}/*.apk
+          path: app/build/outputs/apk/full/${{ inputs.variant }}/*armeabi-v7a*.apk
           if-no-files-found: error
           retention-days: 14

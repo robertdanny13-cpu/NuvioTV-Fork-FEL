@@ -325,7 +325,12 @@ android {
         abi {
             isEnable = !buildingAppBundle
             reset()
-            include("armeabi-v7a", "arm64-v8a")
+            // -PnuvioAbis=armeabi-v7a builds (and compiles native code for) only that ABI.
+            val requestedAbis = providers.gradleProperty("nuvioAbis").orNull
+                ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+                ?.takeIf { it.isNotEmpty() }
+                ?: listOf("armeabi-v7a", "arm64-v8a")
+            include(*requestedAbis.toTypedArray())
             isUniversalApk = false
         }
     }
