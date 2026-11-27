@@ -3581,4 +3581,6 @@
         <item quantity="one">%d clip</item>
         <item quantity="other">%d clips</item>
     </plurals>
+    <string name="firetv_fel_title">Native Dolby Vision FEL (Fire TV Cube 3)</string>
+    <string name="firetv_fel_sub">Play Profile 7 FEL/MEL with its enhancement layer through the Fire TV AV Magisk module. Turns tunneling off for those streams. Off: Dolby Vision 7 follows the handling mode above.</string>
 </resources>

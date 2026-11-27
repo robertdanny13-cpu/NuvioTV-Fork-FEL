@@ -358,6 +358,8 @@ data class PlayerSettings(
     // Only honored when dv7HandlingMode is OFF or DV81_LIBDOVI.
     val dv7LibdoviModeOverride: Int = -1,
     val stripHdr10PlusSei: Boolean = false,
+    /** Fire TV Cube 3 native Dolby Vision Profile 7 FEL/MEL (needs the Fire TV AV Magisk module). */
+    val fireTvFelEnabled: Boolean = true,
     /**
      * Chapters on the progress bar and in the chapters panel, for both engines. ExoPlayer reads
      * Matroska chapters itself over HTTP; mpv lists them. Chapters still feed skip intro when off.
@@ -711,6 +713,7 @@ class PlayerSettingsDataStore @Inject constructor(
     private val legacyMapDv7ToHevcKey = booleanPreferencesKey("map_dv7_to_hevc")
     private val dv7LibdoviModeOverrideKey = intPreferencesKey("dv7_libdovi_mode_override")
     private val stripHdr10PlusSeiKey = booleanPreferencesKey("strip_hdr10plus_sei")
+    private val fireTvFelEnabledKey = booleanPreferencesKey("firetv_fel_enabled")
     private val exoChaptersEnabledKey = booleanPreferencesKey("exo_chapters_enabled")
     private val chapterTitleEnabledKey = booleanPreferencesKey("chapter_title_enabled")
     private val mpvHi10pGnextSoftwareFallbackEnabledKey =
@@ -1131,6 +1134,7 @@ class PlayerSettingsDataStore @Inject constructor(
                 },
                 dv7LibdoviModeOverride = (prefs[dv7LibdoviModeOverrideKey] ?: -1).coerceIn(-1, 4),
                 stripHdr10PlusSei = prefs[stripHdr10PlusSeiKey] ?: false,
+                fireTvFelEnabled = prefs[fireTvFelEnabledKey] ?: true,
                 exoChaptersEnabled = prefs[exoChaptersEnabledKey] ?: false,
                 chapterTitleEnabled = prefs[chapterTitleEnabledKey] ?: true,
                 mpvHi10pGnextSoftwareFallbackEnabled =
@@ -1855,6 +1859,7 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setDv7HandlingMode(mode: Dv7HandlingMode) { store().edit { it[dv7HandlingModeKey] = mode.name } }
     suspend fun setDv7LibdoviModeOverride(mode: Int) { store().edit { it[dv7LibdoviModeOverrideKey] = mode.coerceIn(-1, 4) } }
     suspend fun setStripHdr10PlusSei(enabled: Boolean) { store().edit { it[stripHdr10PlusSeiKey] = enabled } }
+    suspend fun setFireTvFelEnabled(enabled: Boolean) { store().edit { it[fireTvFelEnabledKey] = enabled } }
     suspend fun setExoChaptersEnabled(enabled: Boolean) { store().edit { it[exoChaptersEnabledKey] = enabled } }
     suspend fun setChapterTitleEnabled(enabled: Boolean) { store().edit { it[chapterTitleEnabledKey] = enabled } }
 

@@ -742,6 +742,9 @@ class PlayerRuntimeController(
     @Volatile internal var hasObservedPlayerSettings: Boolean = false
 
     internal val dv7ToHevcForcedStreamUrls: MutableSet<String> = mutableSetOf()
+    // Streams where the Fire TV Cube 3 native FEL route failed; they re-prepare on the regular DV7 path.
+    internal val fireTvFelDisabledStreamUrls: MutableSet<String> = mutableSetOf()
+    @Volatile internal var isFireTvFelActiveForCurrentPlayback: Boolean = false
     // Streams where manual Convert-to-DV8.1 mode 2 failed to play, so the next
     // attempt is forced to libdovi mode 1 before falling back to HDR10 base layer.
     internal val dv7Mode1ForcedStreamUrls: MutableSet<String> = mutableSetOf()

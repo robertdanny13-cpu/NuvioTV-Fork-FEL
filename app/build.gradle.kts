@@ -91,6 +91,8 @@ val doviExtractorHookReady = parseBooleanProperty(
 val doviEnableRealLink = parseBooleanProperty(
     resolveProperty(devProperties, localProperties, "DOVI_ENABLE_REAL_LINK")
 )
+// Fire TV Cube 3 native FEL (armeabi-v7a only; the CMake target skips other ABIs). Needs NDK platform 26 for dvfelplay.
+val enableFireTvFelNative = resolveProperty(devProperties, localProperties, "FIRETV_FEL_NATIVE_ENABLED", "true").let(::parseBooleanProperty)
 val doviStaticLibPath = resolveProperty(devProperties, localProperties, "DOVI_LIBDOVI_STATIC_LIB")
 val doviIncludeDirPath = resolveProperty(devProperties, localProperties, "DOVI_LIBDOVI_INCLUDE_DIR")
 val doviPrebuiltRootPath = resolveProperty(devProperties, localProperties, "DOVI_LIBDOVI_PREBUILT_ROOT")
@@ -139,8 +141,16 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1083
-        versionName = "1.2.0-beta.4"
+        versionCode = providers.gradleProperty("felVersionCode").orNull?.toIntOrNull() ?: 1083
+        versionName = providers.gradleProperty("felVersionName").orNull ?: "1.2.0-beta.4"
+        // Optional -PnuvioAppIdSuffix=.name installs the build next to the regular app.
+        providers.gradleProperty("nuvioAppIdSuffix").orNull?.takeIf { it.isNotBlank() }?.let {
+            applicationIdSuffix = it
+        }
+        // Optional -PnuvioAppLabel="Nuvio FEL" names a side-by-side build.
+        manifestPlaceholders["appLabel"] =
+            providers.gradleProperty("nuvioAppLabel").orNull?.takeIf { it.isNotBlank() } ?: "@string/app_name"
+        buildConfigField("boolean", "FIRETV_FEL_NATIVE_ENABLED", enableFireTvFelNative.toString())
 
         buildConfigField("String", "PARENTAL_GUIDE_API_URL", "\"${localProperties.getProperty("PARENTAL_GUIDE_API_URL", "")}\"")
         buildConfigField("String", "INTRODB_API_URL", "\"${localProperties.getProperty("INTRODB_API_URL", "")}\"")
@@ -163,11 +173,15 @@ android {
             externalNativeBuild {
                 cmake {
                     arguments(
+                        "-DFIRETV_FEL_NATIVE_ENABLED=${if (enableFireTvFelNative) "ON" else "OFF"}",
                         "-DDOVI_ENABLE_LIBDOVI=${if (doviEnableRealLink) "ON" else "OFF"}",
                         "-DDOVI_LIBDOVI_STATIC_LIB=${cmakePath(doviStaticLibPath)}",
                         "-DDOVI_LIBDOVI_INCLUDE_DIR=${cmakePath(doviIncludeDirPath)}",
                         "-DDOVI_LIBDOVI_PREBUILT_ROOT=${cmakePath(doviPrebuiltRootPath)}"
                     )
+                    // dvfelplay uses pthread_setname_np and AImage_deleteAsync, which need NDK platform 26.
+                    // minSdk stays 24; the bridge only loads on the Fire TV Cube 3 (Android 9).
+                    if (enableFireTvFelNative) arguments("-DANDROID_PLATFORM=android-26")
                 }
             }
         }
@@ -181,8 +195,11 @@ android {
         buildConfigField("String", "SENTRY_DSN", buildConfigString(sentryDsn))
 
         // In-app updater (GitHub Releases)
-        buildConfigField("String", "GITHUB_OWNER", "\"NuvioMedia\"")
-        buildConfigField("String", "GITHUB_REPO", "\"NuvioTV\"")
+        // The side-by-side FEL build must not offer the upstream APK (original application id): it looks at this
+        // fork's releases instead, which carry none.
+        val sideBySide = !providers.gradleProperty("nuvioAppIdSuffix").orNull.isNullOrBlank()
+        buildConfigField("String", "GITHUB_OWNER", if (sideBySide) "\"robertdanny13-cpu\"" else "\"NuvioMedia\"")
+        buildConfigField("String", "GITHUB_REPO", if (sideBySide) "\"NuvioTV-Fork-FEL\"" else "\"NuvioTV\"")
     }
 
     flavorDimensions += "distribution"
@@ -309,8 +326,13 @@ android {
         abi {
             isEnable = !buildingAppBundle
             reset()
-            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-            isUniversalApk = true
+            // -PnuvioAbis=armeabi-v7a builds (and compiles native code for) only that ABI.
+            val requestedAbis = providers.gradleProperty("nuvioAbis").orNull
+                ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+                ?.takeIf { it.isNotEmpty() }
+                ?: listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            include(*requestedAbis.toTypedArray())
+            isUniversalApk = providers.gradleProperty("nuvioAbis").orNull.isNullOrBlank()
         }
     }
 

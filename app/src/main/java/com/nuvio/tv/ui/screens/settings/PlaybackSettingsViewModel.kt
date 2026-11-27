@@ -256,6 +256,10 @@ class PlaybackSettingsViewModel @Inject constructor(
         playerSettingsDataStore.setDv7LibdoviModeOverride(mode)
     }
 
+    suspend fun setFireTvFelEnabled(enabled: Boolean) {
+        playerSettingsDataStore.setFireTvFelEnabled(enabled)
+    }
+
     suspend fun setStripHdr10PlusSei(enabled: Boolean) {
         playerSettingsDataStore.setStripHdr10PlusSei(enabled)
     }

@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -38,6 +39,8 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.nuvio.tv.R
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.nuvio.tv.core.player.DisplayCapabilities
 import com.nuvio.tv.data.local.Dv7HandlingMode
 import com.nuvio.tv.data.local.FrameRateMatchingMode
@@ -109,6 +112,15 @@ internal fun PlaybackVideoSection(
             enabled = enabled,
             onClick = { onOpenDialog(PlaybackDialog.DV7_HANDLING_MODE) }
         )
+        if (rememberFireTvFelAvailable()) {
+            SettingsToggleRow(
+                title = stringResource(R.string.firetv_fel_title),
+                subtitle = stringResource(R.string.firetv_fel_sub),
+                checked = settings.fireTvFelEnabled,
+                onToggle = { onUpdate { setFireTvFelEnabled(!settings.fireTvFelEnabled) } },
+                enabled = enabled
+            )
+        }
         SettingsToggleRow(
             title = stringResource(R.string.audio_dv7_preserve_mapping_title),
             subtitle = stringResource(R.string.audio_dv7_preserve_mapping_sub),
@@ -454,4 +466,13 @@ private fun MpvHardwareDecodeModeDialog(
         width = 460.dp,
         maxHeight = 360.dp
     )
+}
+
+/** True on a Fire TV Cube 3 whose AV Magisk module is active; the FEL switch is hidden everywhere else. */
+@Composable
+private fun rememberFireTvFelAvailable(): Boolean {
+    val available by produceState(initialValue = false) {
+        value = withContext(Dispatchers.IO) { com.nuvio.tv.core.player.firetvfel.FireTvFel.available() }
+    }
+    return available
 }

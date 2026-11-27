@@ -3400,4 +3400,6 @@
     <string name="stream_resume_from_time">Hervatten vanaf %1$s</string>
     <string name="stream_resume_from_percent">Hervatten vanaf %1$d%%</string>
 
+    <string name="firetv_fel_title">Native Dolby Vision FEL (Fire TV Cube 3)</string>
+    <string name="firetv_fel_sub">Speel Profile 7 FEL/MEL af met de enhancement layer via de Fire TV AV Magisk-module. Zet tunneling uit voor deze streams. Uit: Dolby Vision 7 volgt de modus hierboven.</string>
 </resources>

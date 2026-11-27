@@ -253,7 +253,13 @@ internal fun PlayerRuntimeController.initializePlayer(
                     "Tunneled playback skipped: media audio goes to USB (route=${currentAudioOutputRoute?.key})"
                 )
             }
-            val tunnelingActive = playerSettings.effectiveTunnelingEnabled && !tunnelingBlockedByUsbAudio
+            // Fire TV Cube 3 native FEL feeds the Dolby Vision decoder sample by sample from the app, which a
+            // tunnelled codec cannot take: no tunnelling while the FEL switch is on and the module is ready.
+            val tunnelingBlockedByFireTvFel = playerSettings.fireTvFelEnabled &&
+                !fireTvFelDisabledStreamUrls.contains(url) &&
+                com.nuvio.tv.core.player.firetvfel.FireTvFel.available()
+            val tunnelingActive = playerSettings.effectiveTunnelingEnabled && !tunnelingBlockedByUsbAudio &&
+                !tunnelingBlockedByFireTvFel
             if (rememberAudioDelayPerDeviceEnabled) {
                 applyStoredAudioDelayForCurrentRouteIfEnabled()
             }
@@ -370,8 +376,19 @@ internal fun PlayerRuntimeController.initializePlayer(
             // The persisted enum stays as-is; only the runtime behavior is derived per playback.
             var effectiveDv7Mode: Dv7HandlingMode
             val dv7AutoResult: DolbyVisionBaseLayerPolicy.Result?
-            when (playerSettings.dv7HandlingMode) {
-                Dv7HandlingMode.AUTO -> {
+            // Fire TV Cube 3 native FEL: Profile 7 must reach the Dolby Vision decoder untouched (no conversion,
+            // no stripping); dvfelplay splits base layer, enhancement layer and RPU itself.
+            val fireTvFelActive = playerSettings.fireTvFelEnabled &&
+                !fireTvFelDisabledStreamUrls.contains(url) &&
+                com.nuvio.tv.core.player.firetvfel.FireTvFel.available()
+            isFireTvFelActiveForCurrentPlayback = fireTvFelActive
+            Log.i(PlayerRuntimeController.TAG, "DV7_FIRETV_FEL: active=$fireTvFelActive")
+            when {
+                fireTvFelActive -> {
+                    dv7AutoResult = null
+                    effectiveDv7Mode = Dv7HandlingMode.OFF
+                }
+                playerSettings.dv7HandlingMode == Dv7HandlingMode.AUTO -> {
                     val result = DolbyVisionBaseLayerPolicy.resolve(
                         context = context,
                         bridgeReady = DoviBridge.isLibraryLoaded
@@ -868,7 +885,7 @@ internal fun PlayerRuntimeController.initializePlayer(
             // Manual Convert-to-DV8.1 uses mode 2; if a prior attempt at this stream
             // failed to play, force mode 1 this time (before the HDR10 fallback).
             val dv7Mode1Forced = dv7Mode1ForcedStreamUrls.contains(url)
-            val manualDv81Selected = playerSettings.dv7HandlingMode == Dv7HandlingMode.DV81_LIBDOVI
+            val manualDv81Selected = !fireTvFelActive && playerSettings.dv7HandlingMode == Dv7HandlingMode.DV81_LIBDOVI
             isManualDv81Mode2ActiveForCurrentPlayback =
                 manualDv81Selected &&
                 effectiveDv7Mode == Dv7HandlingMode.DV81_LIBDOVI &&
@@ -889,7 +906,7 @@ internal fun PlayerRuntimeController.initializePlayer(
             // OR the error handler's per-stream override (preserved for retry-after-failure).
             val mapDv7ToHevcEnabled = effectiveDv7Mode == Dv7HandlingMode.HDR10_BASE_LAYER ||
                     dv7ToHevcForcedStreamUrls.contains(url)
-            val isHdr10BaseLayerModeActive = when (playerSettings.dv7HandlingMode) {
+            val isHdr10BaseLayerModeActive = if (fireTvFelActive) false else when (playerSettings.dv7HandlingMode) {
                 Dv7HandlingMode.AUTO -> dv7AutoResult?.displayDv != true
                 else -> effectiveDv7Mode == Dv7HandlingMode.HDR10_BASE_LAYER ||
                         effectiveDv7Mode == Dv7HandlingMode.STRIP_DV
@@ -967,6 +984,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                 initialForcePcm = hasTriedAudioPcmFallback || isBluetoothAudioOutput,
                 preferSoftwareAudioOnly = isBluetoothAudioOutput,
                 mapDv7ToHevc = mapDv7ToHevcEnabled,
+                fireTvFelActive = fireTvFelActive,
                 onPlaybackSpeedAwareAudioSinkCreated = { playbackSpeedAwareAudioSink = it },
                 onFfmpegAudioRendererChanged = { renderer ->
                     ffmpegAudioRenderer = renderer
@@ -989,7 +1007,7 @@ internal fun PlayerRuntimeController.initializePlayer(
 
             // The app-level factory performs DV7 conversion for the in-band-RPU containers
             // (MP4/fMP4/TS); MKV goes through the vendored extractor. Pass-through for non-DV.
-            val stripDvRpuEnabled = playerSettings.dv7HandlingMode == Dv7HandlingMode.STRIP_DV ||
+            val stripDvRpuEnabled = !fireTvFelActive && playerSettings.dv7HandlingMode == Dv7HandlingMode.STRIP_DV ||
                     effectiveDv7Mode == Dv7HandlingMode.HDR10_BASE_LAYER
             if (stripDvRpuEnabled) {
                 Log.i(PlayerRuntimeController.TAG, "DV_RPU_STRIP: enabled — will remove DV RPU NALs")
@@ -1537,6 +1555,20 @@ internal fun PlayerRuntimeController.initializePlayer(
                             (_exoPlayer !== this@apply || streamFallbackJob?.isActive == true)) return
                         if (isReleasingPlayer && error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT) return
                         cancelFirstFrameWatchdog()
+                        // Fire TV Cube 3 native FEL: MEL / bad stream / device error -> re-prepare this stream on the
+                        // regular DV7 path at the current position (one-shot per stream).
+                        if (isFireTvFelActiveForCurrentPlayback &&
+                            com.nuvio.tv.core.player.firetvfel.FireTvFelFallback.isFallbackError(error) &&
+                            fireTvFelDisabledStreamUrls.add(currentStreamUrl)
+                        ) {
+                            Log.i(
+                                PlayerRuntimeController.TAG,
+                                "DV7_FIRETV_FEL_FALLBACK: ${error.cause?.message} -> regular DV7 path " +
+                                    "host=${currentStreamUrl.safeHost()}"
+                            )
+                            scheduleDeferredPlayerReinitialize(fromPositionMs = currentPosition)
+                            return
+                        }
                         val detailedError = error.toDisplayMessage(context)
                         if (returnToFeatureAfterExtraFailure(detailedError)) return
                         val usenetResponse = error.findInvalidResponseCodeException()
@@ -2276,6 +2308,8 @@ private class SubtitleOffsetRenderersFactory(
      */
     private val preferSoftwareAudioOnly: Boolean = false,
     private val mapDv7ToHevc: Boolean = false,
+    /** Fire TV Cube 3 native FEL: Profile 7 samples go through dvfelplay (see [com.nuvio.tv.core.player.firetvfel]). */
+    private val fireTvFelActive: Boolean = false,
     private val onPlaybackSpeedAwareAudioSinkCreated: (PlaybackSpeedAwareAudioSink) -> Unit,
     private val onFfmpegAudioRendererChanged: (FfmpegAudioRenderer?) -> Unit,
     private val onCuesShown: (List<Cue>) -> Unit = {},
@@ -2311,8 +2345,11 @@ private class SubtitleOffsetRenderersFactory(
         // Same settings as the platform renderer it replaces; the factory's own DV7 setting only reaches that one.
         for (renderer in built) {
             if (renderer::class.java == MediaCodecVideoRenderer::class.java) {
+                val videoCodecAdapterFactory = getCodecAdapterFactory().let { stock ->
+                    if (fireTvFelActive) com.nuvio.tv.core.player.firetvfel.FireTvFelCodecAdapterFactory(stock) else stock
+                }
                 val builder = MediaCodecVideoRenderer.Builder(context)
-                    .setCodecAdapterFactory(getCodecAdapterFactory())
+                    .setCodecAdapterFactory(videoCodecAdapterFactory)
                     .setMediaCodecSelector(mediaCodecSelector)
                     .setAllowedJoiningTimeMs(allowedVideoJoiningTimeMs)
                     .setEnableDecoderFallback(enableDecoderFallback)
@@ -2320,6 +2357,11 @@ private class SubtitleOffsetRenderersFactory(
                     .setEventListener(eventListener)
                     .setMaxDroppedFramesToNotify(DefaultRenderersFactory.MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY)
                     .setMapDV7ToHevc(mapDv7ToHevc)
+                if (fireTvFelActive) {
+                    // Never drop access units before the decoder: a dropped input would skip base and enhancement
+                    // layer together and shows up as stutter; late frames are dropped at the output instead.
+                    builder.experimentalSetLateThresholdToDropDecoderInputUs(C.TIME_UNSET)
+                }
                 out.add(HardwareFirstVideoRenderer(builder))
             } else {
                 out.add(renderer)

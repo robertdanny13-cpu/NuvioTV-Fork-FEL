@@ -155,3 +155,7 @@
 # Audio Sync speech recognition uses JNI to read configuration fields by name.
 -keep class com.k2fsa.sherpa.onnx.** { *; }
 -keep interface com.k2fsa.sherpa.onnx.** { *; }
+
+# Fire TV Cube 3 native FEL (core/player/firetvfel) wraps the video MediaCodecAdapter in a java.lang.reflect.Proxy
+# and picks queueInputBuffer / flush / release by name, so the interface must keep its method names.
+-keep class androidx.media3.exoplayer.mediacodec.MediaCodecAdapter { *; }
