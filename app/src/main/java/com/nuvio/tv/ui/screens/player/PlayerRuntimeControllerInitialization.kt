@@ -2392,7 +2392,20 @@ private class SubtitleOffsetRenderersFactory(
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
             .setAudioProcessors(arrayOf(gainAudioProcessor, nightModeAudioProcessor))
-        val baseAudioSink = builder.build()
+        // Fire TV Cube 3 with the AV module (Wholphin FEL v1.1.2): keep DTS-HD buffers within Fire OS's allocation
+        // budget and hold audio while HDMI reconnects (TrueHD / DTS-HD passthrough through refresh-rate switches).
+        val cubeAudio = !bluetoothForcePcm && com.nuvio.tv.core.player.firetvfel.FireTvFel.available()
+        if (cubeAudio) {
+            builder.setAudioTrackBufferSizeProvider(
+                com.nuvio.tv.core.player.firetvfel.CubeAudioTrackBufferSizeProvider()
+            )
+        }
+        val builtAudioSink = builder.build()
+        val baseAudioSink = if (cubeAudio) {
+            com.nuvio.tv.core.player.firetvfel.HdmiReconnectAudioSink(builtAudioSink, context)
+        } else {
+            builtAudioSink
+        }
         // Audio sync hook: tap the base sink so the returned sink stays a PlaybackSpeedAwareAudioSink
         // and buildAudioRenderers keeps installing PlaybackSpeedAwareAudioRenderer.
         val playbackSpeedAwareAudioSink = PlaybackSpeedAwareAudioSink(
