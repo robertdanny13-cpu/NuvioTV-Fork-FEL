@@ -1,0 +1,131 @@
+name: Build Nuvio FEL (original NuvioTV, Fire TV Cube 3)
+
+# Manual build of the side-by-side "Nuvio FEL" app on the ORIGINAL NuvioMedia/NuvioTV code: application id
+# com.nuvio.tv.felorig, launcher name "Nuvio FEL", so it installs next to the regular Nuvio, Nuvio Arc and
+# Nuvio Arc FEL and keeps its own data. Run it on the branch felorig.
+# The native FEL bridge (armeabi-v7a) is built in; install the armeabi-v7a APK on the Fire TV Cube 3.
+#
+# Release builds are signed with the key in the repository secret FEL_KEYSTORE_BASE64, so every build installs over
+# the previous one. The debug variant always uses the debug key and is only meant for a first test.
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: release (default) is the build to install; debug is only for testing
+        required: true
+        type: choice
+        options:
+          - release
+          - debug
+        default: release
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-fel-orig-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Nuvio FEL (${{ inputs.variant }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      VARIANT: ${{ inputs.variant }}
+      # Version of the original NuvioTV this build is based on (shown in the app as <this>-fel.<run>). Bump it
+      # whenever the branch is synced with a new upstream version.
+      UPSTREAM_VERSION: 1.2.0-beta.4
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      # Account login (QR / email) needs the app's Supabase settings, which live in local.properties and are not
+      # part of the source. Put them in the repository secret LOCAL_PROPERTIES_BASE64 (optional; without it the
+      # app builds, but sign-in stays blank).
+      - name: Prepare local properties
+        env:
+          LOCAL_PROPERTIES_BASE64: ${{ secrets.LOCAL_PROPERTIES_BASE64 }}
+        run: |
+          if [ -n "$LOCAL_PROPERTIES_BASE64" ]; then
+            printf '%s' "$LOCAL_PROPERTIES_BASE64" | base64 --decode > local.properties
+          else
+            echo "::warning::LOCAL_PROPERTIES_BASE64 is not set; account sign-in will not work in this build."
+            touch local.properties
+          fi
+          touch local.dev.properties
+
+      # A fixed signing key from the repository secret FEL_KEYSTORE_BASE64 keeps every build installable over the
+      # previous one. Without the secret the release variant falls back to the cached debug key (which can be
+      # evicted by GitHub, and then the update is refused as "app not installed").
+      - name: Prepare the signing key
+        env:
+          FEL_KEYSTORE_BASE64: ${{ secrets.FEL_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$FEL_KEYSTORE_BASE64" ]; then
+            printf '%s' "$FEL_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/fel.jks"
+            {
+              echo "NUVIO_RELEASE_STORE_FILE=$RUNNER_TEMP/fel.jks"
+              echo "NUVIO_RELEASE_KEY_ALIAS=fel"
+              echo "NUVIO_RELEASE_STORE_PASSWORD=felfelfel"
+              echo "NUVIO_RELEASE_KEY_PASSWORD=felfelfel"
+              echo "CI_USE_DEBUG_SIGNING=false"
+            } >> "$GITHUB_ENV"
+            echo "::notice::Signing with the FEL key from the secret FEL_KEYSTORE_BASE64"
+          else
+            echo "CI_USE_DEBUG_SIGNING=true" >> "$GITHUB_ENV"
+            echo "::warning::FEL_KEYSTORE_BASE64 is not set; signing with the cached debug key."
+          fi
+
+      - name: Install the NDK and CMake the build needs
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;29.0.14206865" "cmake;3.22.1" > /dev/null
+
+      - name: Restore the debug key (fallback)
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: nuvio-fel-orig-debug-keystore-v1
+
+      - name: Build the APK
+        run: |
+          if [ "$VARIANT" = "release" ]; then TASK=assembleFullRelease; else TASK=assembleFullDebug; fi
+          ./gradlew ":app:$TASK" \
+            -PnuvioAppIdSuffix=.felorig \
+            -PnuvioAppLabel="Nuvio FEL" \
+            -PnuvioAbis=armeabi-v7a \
+            -PfelVersionName="${UPSTREAM_VERSION}-fel.${GITHUB_RUN_NUMBER}" \
+            -PfelVersionCode="$((1083 + GITHUB_RUN_NUMBER))" \
+            --stacktrace
+
+      - name: List the APKs
+        run: ls -la "app/build/outputs/apk/full/$VARIANT/"
+
+      - name: Check that the FEL libraries are in the armeabi-v7a APK
+        run: |
+          apk=$(ls app/build/outputs/apk/full/"$VARIANT"/*armeabi-v7a*.apk | head -n 1)
+          echo "APK: $apk"
+          unzip -l "$apk" | grep -E 'lib/armeabi-v7a/(libfiretvfel|libdvfelplay)\.so' || true
+          count=$(unzip -l "$apk" | grep -cE 'lib/armeabi-v7a/(libfiretvfel|libdvfelplay)\.so' || true)
+          if [ "$count" -ne 2 ]; then
+            echo "::error::libfiretvfel.so and/or libdvfelplay.so are missing from the APK; the native FEL bridge was not built."
+            exit 1
+          fi
+
+      - name: Upload the APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuvio-fel-orig-${{ inputs.variant }}-${{ github.run_number }}
+          path: app/build/outputs/apk/full/${{ inputs.variant }}/*armeabi-v7a*.apk
+          if-no-files-found: error
+          retention-days: 14
