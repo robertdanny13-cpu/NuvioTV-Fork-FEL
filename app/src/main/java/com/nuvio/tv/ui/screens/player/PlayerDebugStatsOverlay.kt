@@ -85,7 +85,8 @@ internal data class PlayerSnapshot(
     val playWhenReady: Boolean = false,
     val buffering: Boolean = false,
     val ready: Boolean = false,
-    val positionMs: Long = 0L
+    val positionMs: Long = 0L,
+    val videoFormat: androidx.media3.common.Format? = null
 )
 
 @OptIn(UnstableApi::class)
@@ -137,7 +138,8 @@ internal fun PlayerDebugStatsOverlay(
                     playWhenReady = it.playWhenReady,
                     buffering = it.playbackState == Player.STATE_BUFFERING,
                     ready = it.playbackState == Player.STATE_READY,
-                    positionMs = it.currentPosition
+                    positionMs = it.currentPosition,
+                    videoFormat = runCatching { it.videoFormat }.getOrNull()
                 )
             }
             val streamUrl = viewModel.getCurrentStreamUrl()
@@ -271,19 +273,55 @@ private class DebugStatsSampler(context: Context) {
             lastMissing = it.missing
             lastErrors = it.errors
         }
-        add(felStat())
+        addAll(videoStats(snapshot))
         add(droppedStat(snapshot))
         addAll(thermalStats())
     }.filterNot { it.value == UNAVAILABLE }
 
-    /** Fire TV Cube 3 native FEL: "active" only while a Profile 7 session is composing the enhancement layer. */
-    private fun felStat(): DebugStat {
-        if (!com.nuvio.tv.core.player.firetvfel.FireTvFel.available()) return DebugStat("dv fel", UNAVAILABLE)
-        return if (com.nuvio.tv.core.player.firetvfel.FireTvFel.felSessionActive) {
-            DebugStat("dv fel", "active (BL + EL + RPU)")
-        } else {
-            DebugStat("dv fel", "off (no P7 stream / switch off)")
+    /** Video format, Dolby Vision profile / layers and display rate, like the Nuvio Arc FEL overlay. */
+    private fun videoStats(snapshot: PlayerSnapshot?): List<DebugStat> = buildList {
+        val format = snapshot?.videoFormat
+        if (format != null && format.width > 0) {
+            val codec = when (format.sampleMimeType) {
+                androidx.media3.common.MimeTypes.VIDEO_H265, androidx.media3.common.MimeTypes.VIDEO_DOLBY_VISION -> "HEVC"
+                androidx.media3.common.MimeTypes.VIDEO_H264 -> "AVC"
+                androidx.media3.common.MimeTypes.VIDEO_AV1 -> "AV1"
+                androidx.media3.common.MimeTypes.VIDEO_VP9 -> "VP9"
+                else -> format.sampleMimeType?.substringAfter('/') ?: "video"
+            }
+            val range = when {
+                format.sampleMimeType == androidx.media3.common.MimeTypes.VIDEO_DOLBY_VISION ||
+                    (format.codecs?.startsWith("dv", ignoreCase = true) == true) -> "Dolby Vision"
+                format.colorInfo?.colorTransfer == androidx.media3.common.C.COLOR_TRANSFER_ST2084 -> "HDR10"
+                format.colorInfo?.colorTransfer == androidx.media3.common.C.COLOR_TRANSFER_HLG -> "HLG"
+                else -> "SDR"
+            }
+            val fps = format.frameRate.takeIf { it > 0f }?.let { String.format(Locale.US, " %.3f fps", it).replace(".000", "") } ?: ""
+            add(DebugStat("video", "$codec ${format.width}x${format.height}$fps $range"))
+            val dvMatch = Regex("(?:dvhe|dvh1|dav1|dvav)\\.(\\d+)\\.(\\d+)", RegexOption.IGNORE_CASE).find(format.codecs ?: "")
+            if (dvMatch != null) {
+                val profile = dvMatch.groupValues[1].toInt()
+                val level = dvMatch.groupValues[2]
+                val text = if (profile == 7) {
+                    val fel = com.nuvio.tv.core.player.firetvfel.FireTvFel.felSessionActive
+                    val open = com.nuvio.tv.core.player.firetvfel.FireTvFel.p7SessionOpen
+                    when {
+                        fel -> "P7.$level FEL, native: RPU + BL + EL"
+                        open -> "P7.$level MEL, native: RPU + BL (no EL layer)"
+                        com.nuvio.tv.core.player.firetvfel.FireTvFel.available() -> "P7.$level, native FEL off or fallback"
+                        else -> "P7.$level"
+                    }
+                } else {
+                    "P$profile.$level"
+                }
+                add(DebugStat("dv", text))
+            }
         }
+        val display = runCatching {
+            (appContext.getSystemService(android.content.Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager)
+                .getDisplay(android.view.Display.DEFAULT_DISPLAY)?.refreshRate
+        }.getOrNull()
+        if (display != null && display > 0f) add(DebugStat("display", String.format(Locale.US, "%.3f Hz", display).replace(".000", "")))
     }
 
     private fun cpuStat(proc: ProcTimes?, elapsedSeconds: Double): DebugStat {

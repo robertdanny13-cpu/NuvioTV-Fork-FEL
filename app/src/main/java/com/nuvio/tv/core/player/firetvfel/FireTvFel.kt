@@ -38,6 +38,11 @@ object FireTvFel {
     var felSessionActive: Boolean = false
         internal set
 
+    /** True while a Profile 7 session is feeding the Dolby Vision decoder (FEL or MEL); read by the stats overlay. */
+    @Volatile
+    var p7SessionOpen: Boolean = false
+        internal set
+
     /** The library is loaded and the module's /dev/dvfel interface is ready (checked on every call). */
     fun available(): Boolean = loaded && runCatching { nativeAvailable() }.getOrDefault(false)
 

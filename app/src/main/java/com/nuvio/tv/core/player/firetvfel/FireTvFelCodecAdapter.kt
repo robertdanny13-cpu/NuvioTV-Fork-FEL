@@ -85,6 +85,7 @@ internal class NativeFelSession(width: Int, height: Int) {
         } catch (failure: IllegalStateException) {
             throw FireTvFelException(failure.message ?: "Fire TV FEL input failed", failure)
         }
+        FireTvFel.p7SessionOpen = true
         if (!felReported && FireTvFel.nativeIsFel(handle)) {
             felReported = true
             FireTvFel.felSessionActive = true
@@ -105,6 +106,7 @@ internal class NativeFelSession(width: Int, height: Int) {
         handle = 0L
         felReported = false
         FireTvFel.felSessionActive = false
+        FireTvFel.p7SessionOpen = false
     }
 }
 
