@@ -271,9 +271,20 @@ private class DebugStatsSampler(context: Context) {
             lastMissing = it.missing
             lastErrors = it.errors
         }
+        add(felStat())
         add(droppedStat(snapshot))
         addAll(thermalStats())
     }.filterNot { it.value == UNAVAILABLE }
+
+    /** Fire TV Cube 3 native FEL: "active" only while a Profile 7 session is composing the enhancement layer. */
+    private fun felStat(): DebugStat {
+        if (!com.nuvio.tv.core.player.firetvfel.FireTvFel.available()) return DebugStat("dv fel", UNAVAILABLE)
+        return if (com.nuvio.tv.core.player.firetvfel.FireTvFel.felSessionActive) {
+            DebugStat("dv fel", "active (BL + EL + RPU)")
+        } else {
+            DebugStat("dv fel", "off (no P7 stream / switch off)")
+        }
+    }
 
     private fun cpuStat(proc: ProcTimes?, elapsedSeconds: Double): DebugStat {
         if (proc == null) return DebugStat("cpu", UNAVAILABLE)
