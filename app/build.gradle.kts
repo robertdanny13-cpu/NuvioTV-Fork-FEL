@@ -230,7 +230,8 @@ android {
         }
     }
 
-    if (enableDoviNative) {
+    // The FEL bridge lives in the same CMake project, so it is built whenever either native feature is on.
+    if (enableDoviNative || enableFireTvFelNative) {
         externalNativeBuild {
             cmake {
                 path = file("src/main/cpp/CMakeLists.txt")
